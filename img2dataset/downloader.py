@@ -11,10 +11,13 @@ import time
 import hashlib
 import pyarrow as pa
 import traceback
+import numpy as np
 
 import fsspec
 from .logger import CappedCounter
 from .logger import write_stats
+from .writer import  WebDatasetSampleWriter
+
 
 
 def download_image(row, timeout):
@@ -70,6 +73,7 @@ class Downloader:
         oom_shard_count,
         compute_md5,
         retries,
+        load_np=False
     ) -> None:
         self.sample_writer_class = sample_writer_class
         self.resizer = resizer
@@ -83,6 +87,12 @@ class Downloader:
         self.oom_shard_count = oom_shard_count
         self.compute_md5 = compute_md5
         self.retries = retries
+        self.load_np = load_np
+        self.embd_cols = []
+        if self.load_np:
+            self.embd_cols = ['nn_indices','nn_embeddings']
+            self.column_list.extend(self.embd_cols)
+            assert self.sample_writer_class == WebDatasetSampleWriter
 
     def __call__(
         self,
@@ -102,6 +112,12 @@ class Downloader:
         """Function to start an image downloading in one process"""
 
         shard_id, shard_file = row
+        embd_dict = None
+        if self.load_np:
+            emb_shard_file = shard_file.replace('.feather','.npz')
+            np_shard = np.load(emb_shard_file)
+            embd_dict = {key: np_shard[key] for key in np_shard.files}
+
         start_time = time.time()
 
         fs, shard_path = fsspec.core.url_to_fs(shard_file)
@@ -123,10 +139,13 @@ class Downloader:
         if self.compute_md5:
             schema = schema.append(pa.field("md5", pa.string()))
 
-        pydict = df.select(self.column_list).to_pydict()
+        pydict = df.select([ccl for ccl in self.column_list if ccl not in ['nn_indices','nn_embeddings']]).to_pydict()
+        if embd_dict is not None:
+            pydict.update(embd_dict)
         shard_to_dl = list(enumerate(zip(*(pydict[col] for col in self.column_list))))
         del pydict
         del df
+        del embd_dict
 
         status_dict = CappedCounter()
 
@@ -167,7 +186,7 @@ class Downloader:
                     _, sample_data = shard_to_dl[key]
                     str_key = compute_key(key, shard_id, oom_sample_per_shard, self.oom_shard_count)
                     meta = {
-                        **{self.column_list[i]: sample_data[i] for i in range(len(self.column_list))},
+                        **{self.column_list[i]: sample_data[i] for i in range(len(self.column_list)) if self.column_list[i] not in self.embd_cols},
                         "key": str_key,
                         "status": None,
                         "error_message": error_message,
@@ -176,6 +195,8 @@ class Downloader:
                         "original_width": None,
                         "original_height": None,
                     }
+                    emb = {self.column_list[i]: sample_data[i] for i in range(len(self.column_list)) if self.column_list[i] in self.embd_cols}
+
                     if self.extract_exif:
                         meta["exif"] = None
                     if self.compute_md5:
@@ -253,6 +274,7 @@ class Downloader:
                         str_key,
                         sample_data[caption_indice] if caption_indice is not None else None,
                         meta,
+                        **emb
                     )
                 except Exception as err:  # pylint: disable=broad-except
                     traceback.print_exc()

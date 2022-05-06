@@ -24,7 +24,7 @@ logging.getLogger("exifread").setLevel(level=logging.CRITICAL)
 
 
 def download(
-    url_list: str,
+    url_list: str, # this is the path to the meta data
     image_size: int = 256,
     output_folder: str = "images",
     processes_count: int = 1,
@@ -51,6 +51,10 @@ def download(
     subjob_size: int = 1000,
     retries: int = 0,
     disable_all_reencoding: bool = False,
+    np_path = None,
+    index_path=None,
+    enable_faiss_memory_mapping=False,
+    k=20
 ):
     """Download is the main entry point of img2dataset, it uses multiple processes and download multiple files"""
     config_parameters = dict(locals())
@@ -109,6 +113,10 @@ def download(
         number_sample_per_shard,
         start_shard_id,
         tmp_path,
+        np_path=np_path,
+        index=index_path,
+        enable_faiss_memory_mapping=enable_faiss_memory_mapping,
+        k=k
     )
 
     if output_format == "webdataset":
@@ -146,6 +154,7 @@ def download(
         oom_shard_count=oom_shard_count,
         compute_md5=compute_md5,
         retries=retries,
+        load_np=np_path is not None
     )
 
     print("Starting the downloading of this file")

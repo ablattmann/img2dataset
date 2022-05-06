@@ -1,9 +1,9 @@
 install: ## [Local development] Upgrade pip, install requirements, install package.
-	python -m pip install -U pip
-	python -m pip install -e .
+	python3 -m pip install -U pip
+	python3 -m pip install -e .
 
 install-dev: ## [Local development] Install test requirements
-	python -m pip install -r requirements-test.txt
+	python3 -m pip install -r requirements-test.txt
 
 lint: ## [Local development] Run mypy, pylint and black
 	python -m mypy img2dataset
