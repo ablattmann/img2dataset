@@ -12,7 +12,7 @@ from .writer import (
     TFRecordSampleWriter,
     DummySampleWriter,
 )
-from .reader import Reader
+from .reader import Reader, PreExReader
 from .downloader import Downloader, DummyDownloader
 from .distributor import multiprocessing_distributor, pyspark_distributor
 import fsspec
@@ -59,10 +59,17 @@ def download(
     start_input_file=0,
     max_input_file=None,
     benchmark=False,
-    only_ids=False
+    only_ids=False,
+    only_downloader=False
 ):
     """Download is the main entry point of img2dataset, it uses multiple processes and download multiple files"""
     config_parameters = dict(locals())
+
+    if only_downloader:
+        assert not only_reader
+
+    if only_reader:
+        assert not only_downloader
 
     def make_path_absolute(path):
         fs, p = fsspec.core.url_to_fs(path)
@@ -80,17 +87,17 @@ def download(
     if not fs.exists(tmp_dir):
         fs.mkdir(tmp_dir)
 
-    if not only_reader:
-        print('Setting up signal handler to clean up tmp_dir')
-        def signal_handler(signal_arg, frame):  # pylint: disable=unused-argument
-            try:
-                fs.rm(tmp_dir, recursive=True)
-            except Exception as _:  # pylint: disable=broad-except
-                pass
-            logger_process.terminate()
-            sys.exit(0)
-
-        signal.signal(signal.SIGINT, signal_handler)
+    # if not only_reader:
+    #     print('Setting up signal handler to clean up tmp_dir')
+    #     def signal_handler(signal_arg, frame):  # pylint: disable=unused-argument
+    #         try:
+    #             fs.rm(tmp_dir, recursive=True)
+    #         except Exception as _:  # pylint: disable=broad-except
+    #             pass
+    #         logger_process.terminate()
+    #         sys.exit(0)
+    #
+    #     signal.signal(signal.SIGINT, signal_handler)
 
     save_caption = caption_col is not None
 
@@ -129,8 +136,15 @@ def download(
         start_input_file=start_input_file,
         max_input_file=max_input_file,
         benchmark=benchmark,
-        only_ids=only_ids
+        only_ids=only_ids,
+        is_dummy=only_downloader
     )
+
+    if only_downloader:
+        print('Overwrite reader')
+        reader = PreExReader(tmp_path,
+                             column_list=reader.column_list,
+                             only_ids=reader.only_ids)
 
     if output_format == "webdataset":
         sample_writer_class = WebDatasetSampleWriter
@@ -190,8 +204,8 @@ def download(
         subjob_size,
     )
     logger_process.join()
-    if not only_reader:
-        fs.rm(tmp_dir, recursive=True)
+    # if not only_reader:
+    #     fs.rm(tmp_dir, recursive=True)
 
 
 def main():

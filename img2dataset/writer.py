@@ -109,7 +109,7 @@ class WebDatasetSampleWriter:
             if nn_embeddings is not None:
                 sample['nn_embeddings.npy'] = nn_embeddings
             if query_embeddings is not None:
-                sample['query_embeddings.npy'] = nn_embeddings
+                sample['query_embeddings.npy'] = query_embeddings
 
             # some meta data may not be JSON serializable
             for k, v in meta.items():

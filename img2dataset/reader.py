@@ -14,6 +14,8 @@ from collections import defaultdict
 from glob import glob
 
 
+
+
 def connected_components(neighbors):
     """find connected components in the graph"""
     seen = set()
@@ -100,7 +102,8 @@ class Reader:
         start_input_file=0,
         max_input_file=None,
         benchmark=False,
-        only_ids=True
+        only_ids=True,
+        is_dummy=False
     ) -> None:
         self.input_format = input_format
         if self.input_format == 'parquet-np':
@@ -154,13 +157,15 @@ class Reader:
             else:
                 self.column_list = self.column_list + ["url"]
 
-        print(f'Loading index from {index}')
-        print(faiss.omp_get_max_threads())
-        self.nn_index = load_index(index, enable_faiss_memory_mapping=self.enable_faiss_mmap)
-        print(faiss.omp_get_max_threads())
-        # faiss.omp_set_num_threads()
-        # print(faiss.omp_get_max_threads())
-        print('Done loading index')
+        if not is_dummy:
+
+            print(f'Loading index from {index}')
+            print(faiss.omp_get_max_threads())
+            self.nn_index = load_index(index, enable_faiss_memory_mapping=self.enable_faiss_mmap)
+            print(faiss.omp_get_max_threads())
+            # faiss.omp_set_num_threads()
+            # print(faiss.omp_get_max_threads())
+            print('Done loading index')
 
     def search_and_reconstruct(self,query):
 
@@ -408,3 +413,32 @@ class Reader:
 
                     num_shard += 1
                 self.start_shard_id += num_shard
+
+class PreExReader:
+
+    def __init__(self, dir, column_list, only_ids = False):
+        from natsort import natsorted
+        self.only_ids = only_ids
+        self.column_list = column_list
+        self.files = natsorted(glob(os.path.join(dir,'*.feather')))
+        self.np_files = natsorted(glob(os.path.join(dir,'*.npz')))
+        if len(self.np_files) == 0:
+
+            self.np_files = [None] * len(self.files)
+        else:
+            assert len(self.np_files) == len(self.files)
+
+    def __iter__(self):
+
+        for i, (arrow_file, np_file) in enumerate(zip(self.files,self.np_files)):
+
+            info = f'Yielding shard file "{arrow_file}"'
+
+            if np_file is not None:
+                info+=f' and np_file "{np_file}"'
+
+            print(info)
+
+            num_shard = int(arrow_file.split('/')[-1].split('.')[0])
+
+            yield (num_shard, arrow_file)
