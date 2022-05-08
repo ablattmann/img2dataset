@@ -97,7 +97,8 @@ class WebDatasetSampleWriter:
         self.save_caption = save_caption
         self.buffered_parquet_writer = BufferedParquetWriter(output_folder + "/" + shard_name + ".parquet", schema, 100)
 
-    def write(self, img_str, key, caption, meta, nn_indices=None, nn_embeddings=None):
+    def write(self, img_str, key, caption, meta, nn_indices=None,
+              nn_embeddings=None, query_embeddings=None):
         """write sample to tars"""
         if img_str is not None:
             sample = {"__key__": key, "jpg": img_str}
@@ -107,6 +108,8 @@ class WebDatasetSampleWriter:
                 sample['nn_indices.npy'] = nn_indices
             if nn_embeddings is not None:
                 sample['nn_embeddings.npy'] = nn_embeddings
+            if query_embeddings is not None:
+                sample['query_embeddings.npy'] = nn_embeddings
 
             # some meta data may not be JSON serializable
             for k, v in meta.items():

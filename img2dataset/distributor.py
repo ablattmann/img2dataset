@@ -5,7 +5,7 @@ from tqdm import tqdm
 from itertools import islice, chain
 
 
-def multiprocessing_distributor(
+def  multiprocessing_distributor(
     processes_count,
     downloader,
     reader,

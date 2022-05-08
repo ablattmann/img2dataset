@@ -64,10 +64,10 @@ def load_index(path, enable_faiss_memory_mapping):
         else:
             return faiss.read_index(path, faiss.IO_FLAG_MMAP | faiss.IO_FLAG_READ_ONLY)
     else:
-        assert os.path.isdir(path)
-        index_files = glob(path.rstrip('/') + '/*.index*')
+        assert os.path.isfile(path)
         print('Read index')
-        return faiss.read_index(index_files)
+        return faiss.read_index(path)
+
 
 class Reader:
     """
@@ -96,7 +96,11 @@ class Reader:
         np_path = None,
         index=None,
         enable_faiss_memory_mapping=False,
-        k=None
+        k=None,
+        start_input_file=0,
+        max_input_file=None,
+        benchmark=False,
+        only_ids=True
     ) -> None:
         self.input_format = input_format
         if self.input_format == 'parquet-np':
@@ -105,20 +109,24 @@ class Reader:
             assert k is not None
         self.k = k+1 if k else k
         self.enable_faiss_mmap = enable_faiss_memory_mapping
-        self.index = index
+        self.only_ids = only_ids
+
         self.np_path = np_path
         self.url_col = url_col
         self.caption_col = caption_col
         self.save_additional_columns = save_additional_columns
         self.number_sample_per_shard = number_sample_per_shard
         self.start_shard_id = start_shard_id
+        self.start_input_file = start_input_file
+        self.max_input_file = max_input_file
+        self.benchmark = benchmark
 
         fs, url_path = fsspec.core.url_to_fs(url_list)
         self.fs = fs
         self.tmp_path = tmp_path
 
         if fs.isdir(url_path):
-            self.input_files = sorted(fs.glob(url_path + "/*." + input_format if input_format != 'parquet-np' else 'parquet'))
+            self.input_files = sorted(fs.glob(url_path + "/*." + (input_format if input_format != 'parquet-np' else 'parquet')))
         else:
             self.input_files = [url_path]
 
@@ -132,6 +140,11 @@ class Reader:
         else:
             self.np_files = [None] * len(self.input_files)
 
+        if self.max_input_file is not None:
+            print(f'Only extracting stuff until input_files with id {self.max_input_file}')
+            self.input_files = self.input_files[:self.max_input_file]
+            self.np_files = self.np_files[:self.max_input_file]
+
         if self.input_format == "txt":
             self.column_list = ["url"]
         elif self.input_format in ["json", "csv", "tsv", "tsv.gz", "parquet", 'parquet-np']:
@@ -141,10 +154,83 @@ class Reader:
             else:
                 self.column_list = self.column_list + ["url"]
 
+        print(f'Loading index from {index}')
+        print(faiss.omp_get_max_threads())
+        self.nn_index = load_index(index, enable_faiss_memory_mapping=self.enable_faiss_mmap)
+        print(faiss.omp_get_max_threads())
+        # faiss.omp_set_num_threads()
+        # print(faiss.omp_get_max_threads())
+        print('Done loading index')
 
-        tes = 1
+    def search_and_reconstruct(self,query):
 
-    def _save_to_arrow(self, input_file, np_file=None):
+        query_normalize = query / np.linalg.norm(query, axis=-1, keepdims=True)
+
+        print('Start search and reconstruct')
+        start = time.time()
+        # distances, indices = self.nn_index.search(x=emb_shard_normalize.astype(np.float32),
+        #                                                                          k=self.k)
+        # nn_embeddings = self.nn_index.reconstruct()
+
+        distances, indices, nn_embeddings = self.nn_index.search_and_reconstruct(x=query_normalize.astype(np.float32),
+                                                                                 k=self.k)
+        print(f'End search, took {time.time() - start} s')
+        # remove first entry as this is likely to be the image embeddings itself
+        nn_embeddings = nn_embeddings[:, 1:]
+        indices = indices[:, 1:]
+        # indices = indices
+        # nn_embeddings = nn_embeddings
+        nb_results = np.nonzero(indices != -1)
+        max_row = np.amax(nb_results[0])
+
+        result_nn_embeddings = []
+        result_ids = []
+        for row in range(max_row + 1):
+            r_elements = nb_results[1][nb_results[0] == row]
+            if r_elements.size > 0:
+                filtered = nn_embeddings[row, r_elements]
+                ind_filtered = indices[row, r_elements]
+                to_remove = set(get_non_uniques(filtered))
+                to_keep = np.logical_not(np.isin(np.arange(filtered.shape[0]), list(to_remove)))
+                filtered = filtered[to_keep]
+                ind_filtered = ind_filtered[to_keep]
+                # pad with zeros
+                if filtered.shape[0] < nn_embeddings.shape[1]:
+                    filtered = np.concatenate([filtered] + [np.full((1, filtered.shape[-1]),
+                                                                    -1.)] * (nn_embeddings.shape[1] - filtered.shape[0]))
+                    ind_filtered = np.concatenate([ind_filtered, np.full((indices.shape[-1] - ind_filtered.shape[0],), -1, dtype=np.int32)])
+            else:
+                filtered = np.full_like(nn_embeddings, -1.)
+                ind_filtered = np.full_like(indices, -1, dtype=np.int32)
+
+            result_nn_embeddings.append(filtered)
+            result_ids.append(ind_filtered)
+
+        nn_embeddings = np.stack(result_nn_embeddings, axis=0)
+        indices = np.stack(result_ids, axis=0)
+        print(nn_embeddings.shape, indices.shape)
+
+        return {'nn_indices': indices,
+                'nn_embeddings': nn_embeddings,
+                'query_embeddings': query}
+
+    def search(self,query):
+        query_normalize = query / np.linalg.norm(query, axis=-1, keepdims=True)
+
+        # print('Start search')
+        start = time.time()
+        distances, indices  = self.nn_index.search(x=query_normalize.astype(np.float32),
+                                             k=self.k)
+        print(f'Searched {indices.shape[0]} examples at {(time.time() - start)/indices.shape[0]} secs/example')
+
+        indices = indices[:, 1:]
+        # indices = indices
+        # nn_embeddings = nn_embeddings
+        return {'nn_indices': indices,
+                'query_embeddings': query}
+
+
+    def _save_to_arrow(self, input_file, np_file=None, input_file_number=0):
         """Read the input file and save to arrow files in a temporary directory"""
         embeddings = None
         if self.input_format in ["txt", "json", "csv", "tsv"]:
@@ -182,9 +268,7 @@ class Reader:
             # embeddings are assumed to be aligned
             embeddings = np.load(np_file,mmap_mode='r')
 
-            print(f'Loading index from {self.index}')
-            nn_index = load_index(self.index,enable_faiss_memory_mapping=self.enable_faiss_mmap)
-            print('Done loading index')
+
 
         else:
             raise ValueError(f"Unknown input format {self.input_format}")
@@ -200,6 +284,9 @@ class Reader:
 
         number_shards = math.ceil(df.num_rows / self.number_sample_per_shard)
 
+        if input_file_number < self.start_input_file:
+            return number_shards
+
         def write_shard(shard_id):
             begin_shard = shard_id * self.number_sample_per_shard
             end_shard = min(number_samples, (1 + shard_id) * self.number_sample_per_shard)
@@ -207,47 +294,13 @@ class Reader:
 
             indices = None
             if embeddings is not None:
+
                 emb_shard = embeddings[begin_shard:end_shard]
-                emb_shard_normalize = emb_shard / np.linalg.norm(emb_shard,axis=-1,keepdims=True)
-                print('Start search')
-                start = time.time()
-                distances, indices, nn_embeddings = nn_index.search_and_reconstruct(x=emb_shard_normalize.astype(np.float32),
-                                                                                  k=self.k)
-                print(f'End search, took {time.time() - start} s')
-                # remove first entry as this is likely to be the image embeddings itself
-                nn_embeddings = nn_embeddings[:,1:]
-                indices = indices[:,1:]
-                # indices = indices
-                # nn_embeddings = nn_embeddings
-                nb_results = np.nonzero(indices != -1)
-                max_row = np.amax(nb_results[0])
 
-                result_nn_embeddings = []
-                result_ids = []
-                for row in range(max_row+1):
-                    r_elements = nb_results[1][nb_results[0]==row]
-                    if r_elements.size >0:
-                        filtered = nn_embeddings[row,r_elements]
-                        ind_filtered = indices[row,r_elements]
-                        to_remove = set(get_non_uniques(filtered))
-                        to_keep = np.logical_not(np.isin(np.arange(filtered.shape[0]),list(to_remove)))
-                        filtered = filtered[to_keep]
-                        ind_filtered = filtered[to_keep]
-                        # pad with zeros
-                        if filtered.shape[0] < nn_embeddings.shape[1]:
-                            filtered = np.concatenate([filtered]+[np.full((1,filtered.shape[-1]),
-                                                                          -1.)]*(nn_embeddings.shape[1]-filtered.shape[0]))
-                            ind_filtered = np.concatenate([ind_filtered,np.full((indices.shape[-1]-ind_filtered,))])
-                    else:
-                        filtered = np.full_like(nn_embeddings,-1.)
-                        ind_filtered = np.full_like(indices, -1, dtype=np.int32)
-
-                    result_nn_embeddings.append(filtered)
-                    result_ids.append(ind_filtered)
-
-                nn_embeddings = np.stack(result_nn_embeddings,axis=0)
-                indices = np.stack(result_ids,axis=0)
-                print(nn_embeddings.shape, indices.shape)
+                if self.only_ids:
+                    nn_dict = self.search(emb_shard)
+                else:
+                    nn_dict = self.search_and_reconstruct(emb_shard)
 
                 # for dim_id, batched_component in enumerate(emb_shard.transpose(1,0)):
                 #     df_shard = df_shard.append_column(str(dim_id),pa.array(batched_component))
@@ -278,8 +331,8 @@ class Reader:
 
 
                     fs, tmp_path = fsspec.core.url_to_fs(tmp_file)
-                    if indices is not None:
-                        np.savez(np_file,nn_indices=indices, nn_embeddings=nn_embeddings)
+                    if embeddings is not None:
+                        np.savez(np_file,**nn_dict)
                     with fs.open(tmp_path, "wb") as file:
                         with pa.ipc.new_file(file, df_shard.schema) as writer:
                             writer.write_table(df_shard)
@@ -297,12 +350,15 @@ class Reader:
             shards = []
             # thread pool to make it faster to write files to low latency file systems (ie s3, hdfs)
             try:
-                with ThreadPool(32) as thread_pool:
-                    for shard in thread_pool.imap_unordered(write_shard, range(number_shards)):
-                        shards.append(shard)
+                # with ThreadPool(1) as thread_pool:
+                #     for shard in thread_pool.imap_unordered(write_shard, range(number_shards)):
+                #         shards.append(shard)
+                for shard_id in range(number_shards):
+                    shard = write_shard(shard_id)
+                    shards.append(shard)
+
                 break
             except Exception as e:  # pylint: disable=broad-except
-                raise e
                 if i != 9:
                     print("retrying whole sharding to write to files due to error:", e)
                     time.sleep(2 * i)
@@ -323,24 +379,32 @@ class Reader:
         sample is a tuple of the columns
         """
         for i, (input_file, np_file) in enumerate(zip(self.input_files,self.np_files)):
-            info = "Sharding file number " + str(i + 1) + " of " + str(len(self.input_files)) + " called " + input_file
+            if i < self.start_input_file:
+                #first iterate
+                print(f'Iterating over input files until file nb {self.start_input_file} is reached.')
+                num_shard = self._save_to_arrow(input_file, np_file,i)
+                self.start_shard_id+=num_shard
+            else:
+                info = "Sharding file number " + str(i + 1) + " of " + str(len(self.input_files)) + " called " + input_file
 
-            if np_file is not None:
-                info += f' and aligned embeddings at {np_file}'
-            print(info)
-            shards = self._save_to_arrow(input_file, np_file)
-            print("File sharded in " + str(len(shards)) + " shards")
-            print(
-                "Downloading starting now, check your bandwidth speed (with bwm-ng)"
-                "your cpu (with htop), and your disk usage (with iotop)!"
-            )
+                if np_file is not None:
+                    info += f' and aligned embeddings at {np_file}'
+                print(info)
 
-            num_shard = 0
-            for num_shard, arrow_file in shards:
-                yield (
-                    num_shard + self.start_shard_id,
-                    arrow_file,
+                start = time.time()
+                shards = self._save_to_arrow(input_file, np_file,i)
+                print("File sharded in " + str(len(shards)) + f" shards, which took {(time.time()-start)/60} mins")
+                print(
+                    "Downloading starting now, check your bandwidth speed (with bwm-ng)"
+                    "your cpu (with htop), and your disk usage (with iotop)!"
                 )
 
-                num_shard += 1
-            self.start_shard_id += num_shard
+                num_shard = 0
+                for num_shard, arrow_file in shards:
+                    yield (
+                        num_shard + self.start_shard_id,
+                        arrow_file,
+                    )
+
+                    num_shard += 1
+                self.start_shard_id += num_shard

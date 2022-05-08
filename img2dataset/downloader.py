@@ -55,6 +55,16 @@ def compute_key(key, shard_id, oom_sample_per_shard, oom_shard_count):
     )
     return str_key
 
+class DummyDownloader:
+    """
+    Dummy when intending to only extract temp files
+    """
+    def __init__(self,**kwargs):
+        pass
+
+    def __call__(self, *args, **kwargs):
+        pass
+
 
 class Downloader:
     """The downloader class gets calls with shards, download them then call the writer to write them down"""
@@ -73,7 +83,8 @@ class Downloader:
         oom_shard_count,
         compute_md5,
         retries,
-        load_np=False
+        load_np=False,
+        only_ids =False
     ) -> None:
         self.sample_writer_class = sample_writer_class
         self.resizer = resizer
@@ -90,7 +101,7 @@ class Downloader:
         self.load_np = load_np
         self.embd_cols = []
         if self.load_np:
-            self.embd_cols = ['nn_indices','nn_embeddings']
+            self.embd_cols = ['nn_indices','nn_embeddings', 'query_embeddings'] if not only_ids else ['nn_indices', 'query_embeddings']
             self.column_list.extend(self.embd_cols)
             assert self.sample_writer_class == WebDatasetSampleWriter
 
@@ -139,7 +150,7 @@ class Downloader:
         if self.compute_md5:
             schema = schema.append(pa.field("md5", pa.string()))
 
-        pydict = df.select([ccl for ccl in self.column_list if ccl not in ['nn_indices','nn_embeddings']]).to_pydict()
+        pydict = df.select([ccl for ccl in self.column_list if ccl not in self.embd_cols]).to_pydict()
         if embd_dict is not None:
             pydict.update(embd_dict)
         shard_to_dl = list(enumerate(zip(*(pydict[col] for col in self.column_list))))
