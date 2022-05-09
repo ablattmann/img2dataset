@@ -142,7 +142,7 @@ def download(
 
     if only_downloader:
         print('Overwrite reader')
-        reader = PreExReader(tmp_path,
+        reader = PreExReader(output_folder,
                              column_list=reader.column_list,
                              only_ids=reader.only_ids)
 
