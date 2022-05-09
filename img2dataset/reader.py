@@ -416,29 +416,61 @@ class Reader:
 
 class PreExReader:
 
-    def __init__(self, dir, column_list, only_ids = False):
+    def __init__(self, dir, column_list, only_ids = False,
+                 filter=True):
         from natsort import natsorted
         self.only_ids = only_ids
         self.column_list = column_list
-        self.files = natsorted(glob(os.path.join(dir,'*.feather')))
-        self.np_files = natsorted(glob(os.path.join(dir,'*.npz')))
+        self.dir = dir
+
+        self.files = natsorted(glob(os.path.join(dir,'_tmp','*.feather')))
+        self.np_files = natsorted(glob(os.path.join(dir,'_tmp','*.npz')))
         if len(self.np_files) == 0:
 
             self.np_files = [None] * len(self.files)
         else:
             assert len(self.np_files) == len(self.files)
 
+        if filter:
+            self.filter_files()
+
+    def filter_files(self):
+        tar_files = glob(os.path.join(self.dir,'*.tar'))
+        if len(tar_files) == 0:
+            return
+
+        print(f'Found {len(tar_files)} already existing data shards. Removing tmpfiles for found ids.')
+        pre_len = len(self.files)
+
+        existing_ids = [int(f.split('.')[0]) for f in tar_files]
+
+        for i in range(len(self.files)):
+
+            current_id = int(int(self.files[i].split('/')[-1].split('.')[0]))
+
+            if current_id in existing_ids:
+                self.files.pop(i)
+                self.np_files.pop(i)
+
+        post_len = len(self.files)
+
+        len(self.np_files) == len(self.files), 'Check files, Length not equal...'
+
+        print(f'Removed overall {pre_len-post_len} files, which are already pre-extracted.')
+
+
     def __iter__(self):
 
-        for i, (arrow_file, np_file) in enumerate(zip(self.files,self.np_files)):
+        print('Start file loading')
 
-            info = f'Yielding shard file "{arrow_file}"'
+        for i, (arrow_file, np_file) in enumerate(zip(self.files,self.np_files)):
+            num_shard = int(arrow_file.split('/')[-1].split('.')[0])
+            info = f'Yielding shard file nb {num_shard} with filename "{arrow_file}"'
 
             if np_file is not None:
                 info+=f' and np_file "{np_file}"'
 
             print(info)
 
-            num_shard = int(arrow_file.split('/')[-1].split('.')[0])
 
             yield (num_shard, arrow_file)
