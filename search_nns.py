@@ -1,4 +1,4 @@
-from img2dataset import download
+from img2dataset import download, download2
 import shutil
 import sys,os
 import time
@@ -17,9 +17,9 @@ def main(output_dir, num_threads, n_sample_per_shard=10000, only_ids=True,start_
     print(faiss.omp_get_max_threads())
     start = time.time()
     print(f'Start it!')
-    download(
+    download2(
         processes_count=1,
-        thread_count=4,
+        thread_count=1,
         url_list=url_list,
         image_size=512,
         output_folder=output_dir,
@@ -35,11 +35,9 @@ def main(output_dir, num_threads, n_sample_per_shard=10000, only_ids=True,start_
         index_path=index_path   ,
         enable_faiss_memory_mapping=faiss_mmap,
         k=40,
-        only_reader=True,
         start_input_file=start_file,
         max_input_file=max_file,
         only_ids=only_ids,
-        only_downloader=False
     )
 
     print(f'Done! After {(start-time.time()) / 60.} mins.')

@@ -156,7 +156,7 @@ class Reader:
                 self.column_list = self.column_list + ["caption", "url"]
             else:
                 self.column_list = self.column_list + ["url"]
-
+        # if False:
         if not is_dummy:
 
             print(f'Loading index from {index}')
@@ -290,7 +290,7 @@ class Reader:
         number_shards = math.ceil(df.num_rows / self.number_sample_per_shard)
 
         if input_file_number < self.start_input_file:
-            return number_shards
+            return number_shards - 1
 
         def write_shard(shard_id):
             begin_shard = shard_id * self.number_sample_per_shard
@@ -307,11 +307,14 @@ class Reader:
                 else:
                     nn_dict = self.search_and_reconstruct(emb_shard)
 
+                # nn_dict = {'nn_indices': np.arange(self.k),
+                #            'query_embeddings': emb_shard}
+
                 # for dim_id, batched_component in enumerate(emb_shard.transpose(1,0)):
                 #     df_shard = df_shard.append_column(str(dim_id),pa.array(batched_component))
 
-            tmp_file = self.tmp_path + f"/{shard_id + self.start_shard_id}.feather"
-            np_file = self.tmp_path + f'/{shard_id + self.start_shard_id}.npz'
+            tmp_file = self.tmp_path + f"/{str(shard_id + self.start_shard_id).zfill(7)}.feather"
+            np_file = self.tmp_path + f'/{str(shard_id + self.start_shard_id).zfill(7)}.npz'
             # emb_file = self.tmp_path      + f'/{shard_id + self.start_shard_id}.npy'
             # ind_file = self.tmp_path + f'/{shard_id + self.start_shard_id}_indices.npy'
 
@@ -359,6 +362,7 @@ class Reader:
                 #     for shard in thread_pool.imap_unordered(write_shard, range(number_shards)):
                 #         shards.append(shard)
                 for shard_id in range(number_shards):
+                    print(f'Write shard for shard id {shard_id}')
                     shard = write_shard(shard_id)
                     shards.append(shard)
 
@@ -389,12 +393,15 @@ class Reader:
                 print(f'Iterating over input files until file nb {self.start_input_file} is reached.')
                 num_shard = self._save_to_arrow(input_file, np_file,i)
                 self.start_shard_id+=num_shard
+                print(f'Actual start shard id is {self.start_shard_id}')
             else:
                 info = "Sharding file number " + str(i + 1) + " of " + str(len(self.input_files)) + " called " + input_file
 
                 if np_file is not None:
-                    info += f' and aligned embeddings at {np_file}'
+                    info += f' and aligned embeddings at {np_file}.'
                 print(info)
+
+                print(f'Starting shard id for this file is {self.start_shard_id}')
 
                 start = time.time()
                 shards = self._save_to_arrow(input_file, np_file,i)
@@ -406,13 +413,15 @@ class Reader:
 
                 num_shard = 0
                 for num_shard, arrow_file in shards:
+                    shard_nr = num_shard + self.start_shard_id
                     yield (
-                        num_shard + self.start_shard_id,
+                        shard_nr,
                         arrow_file,
                     )
 
                     num_shard += 1
                 self.start_shard_id += num_shard
+                print(f'Setting start_shard_id to {self.start_shard_id}')
 
 class PreExReader:
 
@@ -425,10 +434,21 @@ class PreExReader:
 
         self.files = natsorted(glob(os.path.join(dir,'_tmp','*.feather')))
         self.np_files = natsorted(glob(os.path.join(dir,'_tmp','*.npz')))
+
         if len(self.np_files) == 0:
 
             self.np_files = [None] * len(self.files)
         else:
+            n_missmatch = 0
+            for i in range(len(self.np_files)):
+                if int(self.np_files[i].split('/')[-1].split('.')[0]) != int(self.files[i].split('/')[-1].split('.')[0]) and n_missmatch == 0:
+                    n_missmatch += 1
+                    print('#'*100)
+                    print('mismatch')
+                    print(self.np_files[i])
+                    print(self.files[i])
+                    print('#' * 100)
+
             assert len(self.np_files) == len(self.files)
 
         if filter:
@@ -454,7 +474,7 @@ class PreExReader:
 
         post_len = len(self.files)
 
-        len(self.np_files) == len(self.files), 'Check files, Length not equal...'
+        assert len(self.np_files) == len(self.files), 'Check files, Length not equal...'
 
         print(f'Removed overall {pre_len-post_len} files, which are already pre-extracted.')
 
